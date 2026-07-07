@@ -1,0 +1,22 @@
+# Ignore root secrets
+.env
+.env.local
+
+# Ignore secrets inside the backend subfolder
+backend/.env
+backend/.env.local
+
+# Ignore secrets inside the frontend subfolder
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.production.local
+
+# Ignore bulky dependencies anywhere in the project tree
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Ignore production builds
+frontend/dist/
+frontend/build/
