@@ -6,10 +6,15 @@ const path = require("path");
 const fs = require("fs");
 const protect = require("./authMiddleware");
 
+const uploadDir = path.resolve(
+  process.env.UPLOAD_DIR || path.resolve(__dirname, "..", "public"),
+);
+fs.mkdirSync(uploadDir, { recursive: true });
+
 // Configure storage destination directory and unique file naming schemes
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, "public/");
+    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     // Prevent filename collisions: timestamp + random salt key + original extension
@@ -30,6 +35,27 @@ const fileFilter = (req, file, cb) => {
 // Instantiated upload processor middleware
 const upload = multer({ storage: storage, fileFilter: fileFilter });
 
+const buildFileUrl = (req, filename) =>
+  `${req.protocol}://${req.get("host")}/public/${filename}`;
+
+const resolveUploadPath = (filename) => {
+  const filePath = path.resolve(uploadDir, filename);
+  if (!filePath.startsWith(uploadDir + path.sep)) {
+    return null;
+  }
+
+  return filePath;
+};
+
+const sendUploadedFile = (req, res, message) => {
+  res.status(201).json({
+    success: true,
+    message,
+    url: buildFileUrl(req, req.file.filename),
+    filename: req.file.filename,
+  });
+};
+
 //API ENDPOINTS
 
 // ============================================================================= //
@@ -40,26 +66,74 @@ const upload = multer({ storage: storage, fileFilter: fileFilter });
  * @access  Private (Requires Admin Token Verification)
  */
 
-router.post("/", protect, upload.single("image"), (req, res) => {
-  try {
+router.post("/", protect, (req, res) => {
+  upload.single("image")(req, res, (uploadError) => {
+    if (uploadError) {
+      console.error("Image upload failed:", uploadError);
+      return res
+        .status(400)
+        .json({ success: false, message: uploadError.message });
+    }
+
     if (!req.file) {
       return res
         .status(400)
         .json({ success: false, message: "No file uploaded" });
     }
 
-    // Build the fully qualified web asset address path string
-    const fileUrl = `${req.protocol}://${req.get("host")}/public/${req.file.filename}`;
+    sendUploadedFile(req, res, "Image uploaded successfully");
+  });
+});
 
-    res.status(201).json({
-      success: true,
-      message: "Image uploaded successfully",
-      url: fileUrl,
-      filename: req.file.filename,
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+// ============================================================================= //
+
+/**
+ * @route   PUT /api/uploads/:filename
+ * @desc    Replace one existing image file with a newly uploaded image
+ * @access  Private (Requires Admin Token Verification)
+ */
+router.put("/:filename", protect, (req, res) => {
+  const oldFilePath = resolveUploadPath(req.params.filename);
+
+  if (!oldFilePath) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid filename" });
   }
+
+  upload.single("image")(req, res, (uploadError) => {
+    if (uploadError) {
+      console.error("Image replacement failed:", uploadError);
+      return res
+        .status(400)
+        .json({ success: false, message: uploadError.message });
+    }
+
+    if (!req.file) {
+      return res
+        .status(400)
+        .json({ success: false, message: "No file uploaded" });
+    }
+
+    if (fs.existsSync(oldFilePath)) {
+      fs.unlink(oldFilePath, (unlinkError) => {
+        if (unlinkError) {
+          return res.status(500).json({
+            success: false,
+            message: "New image uploaded, but old image could not be deleted",
+            error: unlinkError.message,
+            url: buildFileUrl(req, req.file.filename),
+            filename: req.file.filename,
+          });
+        }
+
+        sendUploadedFile(req, res, "Image replaced successfully");
+      });
+      return;
+    }
+
+    sendUploadedFile(req, res, "Image uploaded successfully");
+  });
 });
 
 // ============================================================================= //
@@ -73,7 +147,13 @@ router.delete("/:filename", protect, (req, res) => {
   const fileName = req.params.filename;
 
   // FIXED: Resolves paths directly from the project root execution context safely
-  const filePath = path.resolve(process.cwd(), "public", fileName);
+  const filePath = resolveUploadPath(fileName);
+
+  if (!filePath) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid filename" });
+  }
 
   // Structural sanity check confirming file existence before invoking systemic drops
   if (!fs.existsSync(filePath)) {
@@ -106,10 +186,8 @@ router.delete("/:filename", protect, (req, res) => {
  * @access  Private (Requires Admin Token Verification)
  */
 router.get("/", protect, (req, res) => {
-  const dirPath = path.resolve(process.cwd(), "public");
-
   // 1. Read all files inside the public directory
-  fs.readdir(dirPath, (err, files) => {
+  fs.readdir(uploadDir, (err, files) => {
     if (err) {
       return res
         .status(500)

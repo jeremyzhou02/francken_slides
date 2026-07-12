@@ -1,15 +1,22 @@
 // routes/slides.js
 const express = require("express");
 const router = express.Router();
-const { google } = require("googleapis");
+const mongoose = require("mongoose");
 const Slide = require("../models/slide.js");
 const protect = require("./authMiddleware");
-
-// Initialize Google Calendar API Client
-const calendar = google.calendar({
-  version: "v3",
-  auth: process.env.GOOGLE_API_KEY,
-});
+const Counter = require("../models/counter");
+const {
+  addAgendaItemsToSlides,
+  fetchAgendaItems,
+} = require("../services/googleCalendar");
+const {
+  addQuoteItemsToSlides,
+  fetchQuoteItems,
+} = require("../services/googleSheets");
+const {
+  normalizeSlideSettings,
+  parseGoogleSheetId,
+} = require("../services/slideSettings");
 
 //API ENDPOINTS
 
@@ -23,67 +30,89 @@ const calendar = google.calendar({
 
 router.get("/", async (req, res) => {
   try {
-    const slides = await Slide.find().sort({ order: 1 });
-
-    const processedSlides = await Promise.all(
-      slides.map(async (slide) => {
-        if (slide.type !== "agenda") return slide;
-
-        // Update agenda
-        try {
-          const response = await calendar.events.list({
-            calendarId: slide.settings.calendarId,
-            timeMin: new Date().toISOString(),
-            maxResults: slide.settings.maxResults || 5, // Show max of 5 agenda events
-            singleEvents: true,
-            orderBy: "startTime",
-          });
-
-          const liveItems = response.data.items.map((event) => {
-            // Handle All-Day Events
-            if (event.start.date) {
-              const eventDate = new Date(event.start.date).toLocaleDateString(
-                [],
-                {
-                  month: "short",
-                  day: "numeric",
-                },
-              );
-              return {
-                time: `${eventDate} (All Day)`,
-                event: event.summary,
-              };
-            }
-
-            // Handle Specific Timestamp Events
-            const jsDate = new Date(event.start.dateTime);
-            const dateStr = jsDate.toLocaleDateString([], {
-              month: "short",
-              day: "numeric",
-            });
-            const timeStr = jsDate.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-
-            return {
-              time: `${dateStr} @ ${timeStr}`,
-              event: event.summary,
-            };
-          });
-
-          // Inject live Google items into the Mongoose structure
-          const slideObject = slide.toObject();
-          slideObject.settings.items = liveItems;
-
-          return slideObject;
-        } catch (calendarError) {
-          console.error("Google Calendar Sync Error:", calendarError.message);
-        }
-      }),
-    );
-
+    const slides = await Slide.find().sort({ displayId: 1, createdAt: 1 });
+    const slidesWithAgenda = await addAgendaItemsToSlides(slides);
+    const processedSlides = await addQuoteItemsToSlides(slidesWithAgenda);
     res.json(processedSlides);
+  } catch (err) {
+    console.error("Slides fetch error:", err.message);
+    res.status(500).json({ message: "Server Error", error: err.message });
+  }
+});
+
+// ============================================================================= //
+
+/**
+ * @route   POST /api/slides/agenda-preview
+ * @desc    Preview the next 5 events from a Google Calendar
+ * @access  Private, through admin dashboard only.
+ */
+router.post("/agenda-preview", protect, async (req, res) => {
+  try {
+    const calendarId = String(req.body.calendarId || "").trim();
+
+    if (!calendarId) {
+      return res.status(400).json({ message: "Google Calendar ID required" });
+    }
+
+    const items = await fetchAgendaItems(calendarId);
+    res.json({ items });
+  } catch (err) {
+    res.status(400).json({
+      message: "Could not load events from this Google Calendar",
+      error: err.message,
+    });
+  }
+});
+
+// ============================================================================= //
+
+/**
+ * @route   POST /api/slides/quote-preview
+ * @desc    Preview quote rows from a public Google Sheet
+ * @access  Private, through admin dashboard only.
+ */
+router.post("/quote-preview", protect, async (req, res) => {
+  try {
+    const spreadsheetId =
+      req.body.spreadsheetId || parseGoogleSheetId(req.body.googleSheetUrl);
+
+    if (!spreadsheetId) {
+      return res
+        .status(400)
+        .json({ message: "Valid Google Sheet URL required" });
+    }
+
+    const items = await fetchQuoteItems(spreadsheetId);
+    res.json({ items });
+  } catch (err) {
+    res.status(400).json({
+      message: "Could not load quotes from this Google Sheet",
+      error: err.message,
+    });
+  }
+});
+
+// ============================================================================= //
+
+/**
+ * @route   GET /api/slides/:id
+ * @desc    Get one slide configuration
+ * @access  Private, through admin dashboard only.
+ */
+router.get("/:id", protect, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: "Slide not found" });
+    }
+
+    const slide = await Slide.findById(req.params.id);
+
+    if (!slide) {
+      return res.status(404).json({ message: "Slide not found" });
+    }
+
+    res.json(slide);
   } catch (err) {
     res.status(500).json({ message: "Server Error", error: err.message });
   }
@@ -96,15 +125,81 @@ router.get("/", async (req, res) => {
  * @desc    Create a new slide configuration
  * @access  Private, through admin dashboard only.
  */
-
 router.post("/", protect, async (req, res) => {
   try {
-    const { title, type, duration, order, settings } = req.body;
+    const {
+      title,
+      description,
+      type,
+      duration,
+      frequency,
+      settings = {},
+    } = req.body;
 
-    const newSlide = new Slide({ title, type, duration, order, settings });
+    const counter = await Counter.findByIdAndUpdate(
+      { _id: "slideId" },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true },
+    );
+
+    const newSlide = new Slide({
+      displayId: counter.seq,
+      title,
+      description,
+      type,
+      duration,
+      frequency,
+      settings: normalizeSlideSettings(type, frequency, settings),
+    });
+
     const savedSlide = await newSlide.save();
 
     res.status(201).json(savedSlide);
+  } catch (err) {
+    res.status(400).json({ message: "Validation Error", error: err.message });
+  }
+});
+
+// ============================================================================= //
+
+/**
+ * @route   PUT /api/slides/:id
+ * @desc    Update an existing slide configuration
+ * @access  Private, through admin dashboard only.
+ */
+router.put("/:id", protect, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: "Slide not found" });
+    }
+
+    const {
+      title,
+      description,
+      type,
+      duration,
+      frequency,
+      settings = {},
+    } = req.body;
+
+    const updatedSlide = await Slide.findByIdAndUpdate(
+      req.params.id,
+      {
+        title,
+        description,
+        type,
+        duration,
+        frequency,
+        settings: normalizeSlideSettings(type, frequency, settings),
+      },
+      { new: true, runValidators: true },
+    );
+
+    if (!updatedSlide) {
+      return res.status(404).json({ message: "Slide not found" });
+    }
+
+    res.json(updatedSlide);
   } catch (err) {
     res.status(400).json({ message: "Validation Error", error: err.message });
   }

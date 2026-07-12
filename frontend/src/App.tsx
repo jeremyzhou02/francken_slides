@@ -1,51 +1,87 @@
-// src/App.jsx
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import {
   BrowserRouter as Router,
   Routes,
   Route,
   Navigate,
+  useLocation,
 } from "react-router-dom";
 import axios from "axios";
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
+import LoadingScreen from "./components/Loadingscreen";
+import SlideEditor from "./components/SlideEditor";
+import PublicTVView from "./components/PublicTVView";
 import "./index.css";
 
-function PublicTVView() {
+function AppRoutes({
+  token,
+  isInitializing,
+  onLoginSuccess,
+  onLogout,
+}: {
+  token: string | null;
+  isInitializing: boolean;
+  onLoginSuccess: (newToken: string) => void;
+  onLogout: () => void;
+}) {
+  const location = useLocation();
+  const isAdminRoute = location.pathname.startsWith("/admin");
+
+  if (isInitializing && isAdminRoute) {
+    return <LoadingScreen />;
+  }
+
   return (
-    <div
-      style={{
-        backgroundColor: "#000000",
-        minHeight: "100vh",
-        width: "100vw",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        color: "#ffffff",
-      }}
-    >
-      <h1>📺 TV Static Slide Rotation (Public View Loop)</h1>
-    </div>
+    <Routes>
+      {/* TV Slides */}
+      <Route path="/" element={<PublicTVView />} />
+      {/* Admin dashboard */}
+      <Route
+        path="/admin"
+        element={
+          token ? (
+            <Dashboard token={token} onLogout={onLogout} />
+          ) : (
+            <Login onLoginSuccess={onLoginSuccess} />
+          )
+        }
+      />
+      <Route
+        path="/admin/slides/:id"
+        element={
+          token ? (
+            <SlideEditor token={token} onLogout={onLogout} />
+          ) : (
+            <Navigate to="/admin" replace />
+          )
+        }
+      />
+      {/* Redirect any unknown paths to TV Slides */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
 export default function App() {
-  const [token, setToken] = useState(
+  const [token, setToken] = useState<string | null>(
     localStorage.getItem("adminToken") || null,
   );
   const [isInitializing, setIsInitializing] = useState(true);
 
-  const handleLoginSuccess = (newToken) => {
+  // Handle succesfull login
+  const handleLoginSuccess = (newToken: string) => {
     localStorage.setItem("adminToken", newToken);
     setToken(newToken);
   };
 
+  // Handle logout
   const handleLogout = () => {
     localStorage.removeItem("adminToken");
     setToken(null);
   };
 
-  // Run when website loads for first time.
+  // Loading screen, token verifcation
   useEffect(() => {
     const checkInitialToken = async () => {
       const savedToken = localStorage.getItem("adminToken");
@@ -55,7 +91,6 @@ export default function App() {
         return;
       }
 
-      // Token check
       try {
         const baseUrl = import.meta.env.VITE_API_BASE_URL;
 
@@ -64,8 +99,12 @@ export default function App() {
         });
 
         setToken(savedToken);
-      } catch (err) {
-        console.error(err.response?.data || err.message);
+      } catch (err: unknown) {
+        if (axios.isAxiosError(err)) {
+          console.error(err.response?.data || err.message);
+        } else {
+          console.error(err);
+        }
         setToken(null);
       } finally {
         setIsInitializing(false);
@@ -73,46 +112,16 @@ export default function App() {
     };
 
     checkInitialToken();
-  }, []); // Empty array ensures this never runs again after initial boot
-
-  if (isInitializing) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: "#f8fafc",
-          fontFamily: "sans-serif",
-        }}
-      >
-        <h2>Loading session...</h2>
-      </div>
-    );
-  }
+  }, []);
 
   return (
     <Router>
-      <Routes>
-        {/* TV Slides */}
-        <Route path="/" element={<PublicTVView />} />
-
-        {/* Admin dashboard */}
-        <Route
-          path="/admin"
-          element={
-            token ? (
-              <Dashboard onLogout={handleLogout} />
-            ) : (
-              <Login onLoginSuccess={handleLoginSuccess} />
-            )
-          }
-        />
-
-        {/* Redirects any unknown paths back to the root view */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <AppRoutes
+        token={token}
+        isInitializing={isInitializing}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+      />
     </Router>
   );
 }

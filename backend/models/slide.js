@@ -3,30 +3,33 @@ const mongoose = require("mongoose");
 
 const SlideSchema = new mongoose.Schema(
   {
+    displayId: { type: Number, unique: true },
     title: {
       type: String,
       required: true,
       trim: true,
     },
+    description: {
+      type: String,
+      required: true,
+    },
     type: {
       type: String,
       required: true,
-      // Ensure only your supported slide types can be saved
-      enum: ["image", "histogram", "countdown", "agenda"],
+      enum: ["image", "quote", "histogram", "countdown", "agenda"],
     },
     duration: {
       type: Number,
       default: 15, // Time in seconds this slide stays on the TV screen
     },
-    order: {
-      type: Number,
+    frequency: {
+      type: String,
       required: true,
+      enum: ["loop", "hourly", "daily"],
     },
-    // Mixed type acts as a flexible bucket.
-    // The structure inside changes completely based on the 'type' field above.
     settings: {
       type: mongoose.Schema.Types.Mixed,
-      required: true,
+      default: {},
     },
   },
   { timestamps: true },

@@ -1,6 +1,7 @@
 # Ignore root secrets
 .env
 .env.local
+run.sh
 
 # Ignore secrets inside the backend subfolder
 backend/.env

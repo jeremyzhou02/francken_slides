@@ -3,16 +3,25 @@
 // Last Updated 07-07-2026 by Jeremy Zhou.
 
 const express = require("express"); // Import Express framework into server
+const { webcrypto } = require("crypto");
+
+if (!global.crypto) {
+  global.crypto = webcrypto;
+}
+
 const mongoose = require("mongoose"); // Import ODM libary for MongoDB
 const cors = require("cors"); // Cross-Origin Resource Sharing
+const path = require("path");
 require("dotenv").config(); // Loads enviroment variables
 
 const app = express(); // Initialize express
 
+app.set("trust proxy", 1);
+
 // Middleware
 app.use(cors()); // Active CORS
 app.use(express.json()); // Needed for JSON Bodies for incoming traffic.
-app.use("/public", express.static("public")); // Handles images
+app.use("/public", express.static(path.join(__dirname, "public"))); // Handles images
 
 // Database Connection
 mongoose
@@ -22,6 +31,13 @@ mongoose
 
 // Basic sanity check route
 app.get("/", (req, res) => res.send("API Running"));
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    status: "ok",
+    uptime: process.uptime(),
+  });
+});
 
 // Routes
 app.use("/api/slides", require("./routes/slides"));
